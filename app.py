@@ -240,7 +240,7 @@ async def complete_prediction_workflow(
             
         except Exception as ml_error:
             # Update sample status to failed
-            await update_sample_status(sample_id, "failed", error=str(ml_error))
+            await update_sample_status(sample_id, "failed", error_message=str(ml_error))
             raise HTTPException(
                 status_code=500,
                 detail=f"ML prediction failed: {str(ml_error)}"

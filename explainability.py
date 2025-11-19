@@ -37,10 +37,16 @@ def compute_gradcam(
     # Compute gradients
     with tf.GradientTape() as tape:
         conv_outputs, predictions = grad_model(img_array)
+        
+        # FIX: Handle predictions properly
+        # Extract first batch element before argmax
         class_idx = tf.argmax(predictions[0])
-        loss = predictions[:, class_idx]
+        
+        # FIX: Index correctly - predictions[0] first, then class
+        class_channel = predictions[:, class_idx]
     
-    grads = tape.gradient(loss, conv_outputs)
+    # FIX: Compute gradient with respect to conv_outputs
+    grads = tape.gradient(class_channel, conv_outputs)
     
     # Global average pooling of gradients
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
@@ -54,6 +60,7 @@ def compute_gradcam(
     heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
     
     return heatmap.numpy()
+
 
 def overlay_heatmap(
     image: np.ndarray,
