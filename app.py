@@ -225,9 +225,8 @@ async def complete_prediction_workflow(
                 detail=f"Failed to upload image: {str(storage_error)}"
             )
         
-        # 6. Run ML prediction
         logger.info(f"Running {prediction_type} prediction...")
-        
+        # 6. Run ML prediction
         try:
             image = decode_image(image_data)
             
@@ -238,57 +237,51 @@ async def complete_prediction_workflow(
             
             logger.info(f"Prediction: {result['predicted_class']} (confidence: {result['confidence']:.2%})")
             
+            # Log Grad-CAM status
+            if "gradcam_image" in result:
+                if result["gradcam_image"]:
+                    logger.info("✅ Grad-CAM generated successfully")
+                else:
+                    logger.warning("⚠️ Grad-CAM is None")
+            
         except Exception as ml_error:
-            # Update sample status to failed
+            logger.error(f"ML prediction failed: {ml_error}", exc_info=True)
             await update_sample_status(sample_id, "failed", error_message=str(ml_error))
             raise HTTPException(
                 status_code=500,
                 detail=f"ML prediction failed: {str(ml_error)}"
             )
-        
-        # 7. Process Grad-CAM if available
-        gradcam_base64 = None
-        if "gradcam_image" in result and result["gradcam_image"] is not None:
-            try:
-                import cv2
-                import numpy as np
-                from base64 import b64encode
-                
-                # Get the heatmap
-                heatmap = result["gradcam_image"]
-                
-                # Convert to uint8
-                heatmap_uint8 = np.uint8(255 * heatmap)
-                
-                # Resize to match original image size
-                heatmap_resized = cv2.resize(heatmap_uint8, (224, 224))
-                
-                # Apply colormap (JET - red=high activation, blue=low)
-                colored_heatmap = cv2.applyColorMap(heatmap_resized, cv2.COLORMAP_JET)
-                
-                # Optionally superimpose on original image
-                # Get RGB channels from preprocessed image
-                if image.shape[-1] == 7:
-                    original_rgb = image[:, :, :3]  # Use first 3 channels
-                else:
-                    original_rgb = image
-                
-                original_uint8 = np.uint8(255 * original_rgb)
-                original_bgr = cv2.cvtColor(original_uint8, cv2.COLOR_RGB2BGR)
-                
-                # Blend: 40% heatmap + 60% original
-                superimposed = cv2.addWeighted(colored_heatmap, 0.4, original_bgr, 0.6, 0)
-                
-                # Encode to PNG base64
-                _, buffer = cv2.imencode('.png', superimposed)
-                gradcam_base64 = b64encode(buffer).decode('utf-8')
-                
-                logger.info("Grad-CAM generated and encoded")
-                
-            except Exception as gradcam_error:
-                logger.warning(f"Failed to encode Grad-CAM: {gradcam_error}")
-                gradcam_base64 = None
-        
+
+        # 7. Save prediction to database
+        try:
+            prediction = await save_prediction(
+                sample_id=sample_id,
+                doctor_id=doctor["id"],
+                predicted_class=result["predicted_class"],
+                confidence_score=result["confidence"],
+                probabilities=result["probabilities"],
+                model_version=1
+            )
+            
+            # Save detailed analysis if available
+            if prediction_type == "detailed":
+                await save_prediction_details(
+                    prediction_id=prediction["id"],
+                    species_detected=result.get("species"),
+                    parasite_count=result.get("parasite_count"),
+                    image_quality_score=result.get("quality_score")
+                )
+            
+            # Update sample status to completed
+            await update_sample_status(sample_id, "completed")
+            
+        except Exception as db_error:
+            logger.error(f"Database error: {db_error}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save prediction: {str(db_error)}"
+            )
+
         # 8. Save prediction to database
         try:
             prediction = await save_prediction(
@@ -349,7 +342,8 @@ async def complete_prediction_workflow(
         
         logger.info(f"✅ Prediction completed in {processing_time}ms")
         
-        # 11. Return complete response with Grad-CAM
+        
+        # 11. Return complete response
         return {
             "success": True,
             "message": "Prediction completed successfully",
@@ -371,7 +365,10 @@ async def complete_prediction_workflow(
                 "species_detected": result.get("species"),
                 "parasite_count": result.get("parasite_count"),
                 "image_quality_score": result.get("quality_score"),
-                "gradcam_image": f"data:image/png;base64,{gradcam_base64}" if gradcam_base64 else None
+                "uncertainty": result.get("uncertainty"),
+                "confidence_level": result.get("confidence_level"),
+                "recommendation": result.get("recommendation"),
+                "gradcam_image": result.get("gradcam_image")  # Already base64 from inference.py
             },
             "metadata": {
                 "doctor_id": doctor["id"],
